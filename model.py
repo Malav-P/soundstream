@@ -2,6 +2,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torchaudio.transforms import MelSpectrogram
+from torchaudio import functional as aF
 
 class CausalConv1d(nn.Conv1d):
     def __init__(self, *args, **kwargs):
@@ -70,7 +71,7 @@ class Encoder(nn.Module):
 
     def forward(self, x):
         x = self.layers(x)
-        x = x.permute(1, 0)
+        x = x.permute(0, 2, 1)
         return x
     
 
@@ -102,52 +103,79 @@ class Decoder(nn.Module):
         )
 
     def forward(self, x):
-        x = x.permute(1, 0)
+        x = x.permute(0, 2, 1)
         x = self.layers(x)
         return x
     
-class VectorQuantizerFunction(torch.autograd.Function):
-    @staticmethod
-    def forward(ctx, x, codebook):
-        x_norm = (x ** 2).sum(dim=1, keepdim=True)             # (B, 1)
-        codebook_norm = (codebook ** 2).sum(dim=1)
-        dist = x_norm + codebook_norm - 2 * x @ codebook.t()   # (B, N)
-
-        indices = torch.argmin(dist, dim=1)                    # (B,)
-        quantized = codebook[indices] 
-
-        return indices, quantized
-
-    @staticmethod
-    def backward(ctx, grad_output1, grad_output2):
-        return grad_output2, None
-    
 class VectorQuantizer(nn.Module):
-    def __init__(self, codebook_dim, codebook_size, gamma=0.99):
+    def __init__(self, codebook_dim, codebook_size, gamma=0.99, dead_codebook_ema_threshold=2):
         super().__init__()
         self.codebook_dim = codebook_dim
         self.codebook_size = codebook_size
-        self.register_buffer('codebook', torch.randn(codebook_size, codebook_dim))
+        self.register_buffer('codebook', torch.empty(codebook_size, codebook_dim))
         self.register_buffer('N', torch.ones(codebook_size))
         self.register_buffer('m', self.codebook.detach().clone())
         self.saved_input = None
         self.saved_indices = None
 
         self.gamma = gamma
+        self.dead_codebook_ema_threshold = dead_codebook_ema_threshold
+
+        torch.nn.init.kaiming_uniform_(self.codebook)
 
     def forward(self, x):
-        self.saved_input = x.detach().clone()
-        self.saved_indices, encoded = VectorQuantizerFunction.apply(x, self.codebook)
-        return encoded
+        self.saved_input = x
+        x_norm = (x ** 2).sum(dim=-1, keepdim=True)                  # (B,S,1)
+        codebook_norm = (self.codebook ** 2).sum(dim=-1)             # (N,)
+        dist = x_norm + codebook_norm.unsqueeze(0).unsqueeze(0) - 2 * x @ self.codebook.t()   # (B,S,N)
+
+        self.saved_indices = torch.argmin(dist, dim=-1)                     # (B,S)
+        quantized = self.codebook[self.saved_indices]                       # (B, S, D)
+
+        return x + (quantized - x).detach()
     
     def update_codebook(self):
-        unique_indices = self.saved_indices.unique(sorted=True)
-        grouped_vectors = [self.saved_input[self.saved_indices==idx] for idx in unique_indices]
+        mapped_idxs = self.saved_indices.unique(sorted=True)
+        all_indices = torch.arange(self.codebook_size).to(mapped_idxs.device)
+        mask = ~torch.isin(all_indices, mapped_idxs) 
+        not_mapped_idxs = all_indices[mask]
 
-        for i, group in zip(unique_indices, grouped_vectors):
-            self.N[i] = self.gamma * self.N[i] + (1-self.gamma) * group.shape[0]
-            self.m[i] = self.gamma * self.m[i] + (1-self.gamma) * group.sum(axis=0)
-            self.codebook[i] = self.m[i] / self.N[i]
+        group_sizes = torch.empty(len(mapped_idxs)).to(mapped_idxs.device)
+        group_sums = torch.empty(len(mapped_idxs), self.codebook_dim).to(mapped_idxs.device)
+
+        saved_input_detached = self.saved_input.detach()
+
+        for i, idx in enumerate(mapped_idxs):
+            group = saved_input_detached[self.saved_indices==idx]
+            group_sizes[i] = group.shape[0]
+            group_sums[i] = group.sum(dim=0)
+
+        self.N[mapped_idxs] = self.gamma * self.N[mapped_idxs] + (1-self.gamma) * group_sizes
+        self.m[mapped_idxs] = self.gamma * self.m[mapped_idxs] + (1-self.gamma) * group_sums
+        self.codebook.copy_(self.m / self.N[:, None])
+
+        self.N[not_mapped_idxs] *= self.gamma
+        self.m[not_mapped_idxs] *= self.gamma
+
+        self.prune_unused_codes()
+
+    def prune_unused_codes(self):
+        to_be_pruned = self.N < self.dead_codebook_ema_threshold
+        if not torch.any(to_be_pruned):
+            return
+
+        # Flatten input to choose random replacements
+        replacement_candidates = self.saved_input.detach().flatten(0, 1)
+        replacement_idxs = torch.randperm(len(replacement_candidates))[:to_be_pruned.sum()]
+
+        replacements = replacement_candidates[replacement_idxs]
+
+        # Update codebook, m, and N in-place using masks
+        self.codebook[to_be_pruned] = replacements
+        self.m[to_be_pruned] = replacements
+        self.N[to_be_pruned] = self.dead_codebook_ema_threshold
+        
+
 
 class ResidualVectorQuantizer(nn.Module):
     def __init__(self, n_quantizers, codebook_dim, codebook_size, gamma=0.99, use_quantizer_dropout=True):
@@ -157,21 +185,21 @@ class ResidualVectorQuantizer(nn.Module):
         self.codebook_size = codebook_size
         self.gamma = gamma
         self.use_quantizer_dropout = use_quantizer_dropout
-        self.vqs = [VectorQuantizer(codebook_dim=codebook_dim, codebook_size=codebook_size, gamma=gamma) for _ in range(self.nquantizers)]
+        self.vqs = nn.ModuleList([VectorQuantizer(codebook_dim=codebook_dim, codebook_size=codebook_size, gamma=gamma) for _ in range(self.nquantizers)])
+        self.nq = self.nquantizers
 
     def forward(self, x):
-        nq = torch.randint(1, self.nquantizers + 1, (1,)).item() if (self.use_quantizer_dropout and self.training) else self.nquantizers # this is batchwise, but authors do instance wise sampling, might change later
+        self.nq = torch.randint(1, self.nquantizers + 1, (1,)).item() if (self.use_quantizer_dropout and self.training) else self.nquantizers
         yhat = torch.zeros_like(x)
-        residual = x.clone()
-        for vq in self.vqs[:nq]:
-            encoded = vq(residual)
-            yhat += encoded
-            residual -= encoded
-        
+        residual = x
+        for vq in self.vqs[:self.nq]:
+            quantized = vq(residual)        # includes straight-through estimator
+            yhat += quantized               # quantized = residual + (e - residual).detach()
+            residual = residual - quantized # keep residual differentiable
         return yhat
     
     def update_codebook(self):
-        for vq in self.vqs:
+        for vq in self.vqs[:self.nq]:
             vq.update_codebook()
 
 
@@ -227,7 +255,7 @@ class STFTDiscriminator(nn.Module):
                                           n_fft=self.n_fft,
                                           hop_length=self.H,
                                           win_length=self.W,
-                                          window = torch.hann_window(self.W),
+                                          window = torch.hann_window(self.W).to(x.device),
                                           return_complex=True)
                                           )
         x = x.permute(0, 3, 1, 2)
@@ -357,15 +385,18 @@ def generator_feature_loss(Dx, DGx):
         mylist = torch.empty(L, B)
         for k, (real, fake) in enumerate(zip(out1, out2)):
             dims_to_reduce = tuple(i for i in range(real.ndim) if i != 0 and i != real.ndim - 1)
-            real = real.mean(dims_to_reduce)
-            fake = fake.mean(dims_to_reduce)
-            mylist[k] = torch.mean(torch.abs(real - fake), dim=-1)
+            real_minus_fake = (real-fake).sum(dims_to_reduce)
+            mylist[k] = torch.mean(torch.abs(real_minus_fake), dim=-1)
         
         losses[j] = mylist.mean(dim=0) # shape (B,)
     loss = losses.mean()
+    print(loss)
     return loss
 
-def generator_reconstruction_loss(x, Gx, windows=None, eps=1e-7):
+def generator_reconstruction_loss(x, Gx):
+    return F.mse_loss(x, Gx)
+
+def generator_multispectral_reconstruction_loss(x, Gx, windows=None, eps=1e-20):
     """
     Compute the reconstruction loss
 
@@ -379,16 +410,16 @@ def generator_reconstruction_loss(x, Gx, windows=None, eps=1e-7):
     if not windows:
         windows = torch.tensor([2**i for i in range(6, 12)], dtype=torch.long)
     
-    alphas = torch.sqrt(windows // 2)
+    alphas = (windows // 2) ** 0.5
     loss = 0
-    for a, s in zip(alphas, windows):
-        real_spec = _compute_mel_spectrogram(x, sample_rate=24000, s=s, n_mels=8)
-        fake_spec = _compute_mel_spectrogram(Gx, sample_rate=24000, s=s, n_mels=8)
-        l1_loss = torch.linalg.vector_norm((real_spec - fake_spec).sum(dim=-1), ord=1, dim=-1)
-        l2_loss = torch.linalg.vector_norm((torch.log(real_spec + eps) - torch.log(fake_spec + eps)).sum(dim=-1), ord=2, dim=-1)
-        loss += l1_loss + a * l2_loss
+    for alpha, s in zip(alphas, windows):
+        real_spec = _compute_mel_spectrogram(x, sample_rate=24000, s=s, n_mels=64)
+        fake_spec = _compute_mel_spectrogram(Gx, sample_rate=24000, s=s, n_mels=64)
+        l1_loss = torch.linalg.vector_norm(real_spec - fake_spec, ord=1, dim=-2).mean()
+        l2_loss = torch.linalg.vector_norm(torch.log(real_spec.clamp(min=eps)) - torch.log(fake_spec.clamp(min=eps)), ord=2, dim=-2).mean()
+        loss += l1_loss + alpha * l2_loss
 
-    return loss.mean()  # average over the batch
+    return loss 
 
 def generator_loss(x, Gx, Dx, DGx, weights=None):
     """
@@ -402,7 +433,7 @@ def generator_loss(x, Gx, Dx, DGx, weights=None):
         DGx (List[List[torch.tensor]]): same as above, but for a waveform from the generator
     """
     if not weights:
-        weights = [1, 100, 1]
+        weights = [1, 100, 0.02]
 
     disc_outputs = [disc[-1].squeeze() for disc in DGx]
 
@@ -414,17 +445,40 @@ def generator_loss(x, Gx, Dx, DGx, weights=None):
 
     return loss
 
+def commit_loss(soundstream_model):
+    """
+    Compute the commitment loss of each quantizer and return the sum over all quantizers
+    """
+    rvq = soundstream_model.rvq
+
+    loss = 0
+    for vq in rvq.vqs[:rvq.nq]:
+        x = vq.saved_input
+        quantized = vq.codebook[vq.saved_indices]
+        loss = loss + F.mse_loss(quantized.detach(), x)
+
+    return loss
 
 def _compute_mel_spectrogram(x, sample_rate, s, n_mels):
-    transform = MelSpectrogram(
-                    sample_rate=sample_rate,
-                    n_mels=n_mels,
-                    win_length=s,
-                    hop_length=s // 4,
-                    n_fft=s
-                )
+    specgram = aF.spectrogram(waveform=x,
+                              pad=0,
+                              window=torch.hann_window(s, device=x.device),
+                              n_fft=max(s, 512),
+                              hop_length=s//4,
+                              win_length=s,
+                              power=2.0,
+                              normalized=False,
+                              center=True,
+                              pad_mode="reflect",
+                              onesided=True)
+    fb = aF.melscale_fbanks(n_freqs=max(s, 512)//2 + 1,
+                            f_min=0.0,
+                            f_max=float(sample_rate//2),
+                            n_mels=n_mels,
+                            sample_rate=sample_rate).to(x.device)
+    mel_specgram = torch.matmul(specgram.transpose(-1, -2), fb).transpose(-1, -2)
 
-    return transform(x)
+    return mel_specgram
 
 class SoundStream(nn.Module):
     """Instance of SoundStream Model
@@ -438,12 +492,12 @@ class SoundStream(nn.Module):
         gamma (float): exponential moving average parameter for dictionary updates of codebook vectors. Default 0.99
     """
     def __init__(self,
-                 C=16,
-                 strides = (2, 4, 5, 8),
+                 C=32,
+                 strides = (3, 4, 5, 8),
                  embedding_dim = 512,
                  n_quantizers = 8,
                  codebook_size = 1024,
-                 gamma=0.99,
+                 rq_ema_gamma=0.99,
                  use_quantizer_dropout=True):
         super().__init__()
         self.embedding_ratio = strides[0] * strides[1] * strides[2] * strides[3]
@@ -451,12 +505,13 @@ class SoundStream(nn.Module):
         self.rvq = ResidualVectorQuantizer(n_quantizers=n_quantizers,
                                            codebook_dim=embedding_dim,
                                            codebook_size=codebook_size,
-                                           gamma=gamma,
+                                           gamma=rq_ema_gamma,
                                            use_quantizer_dropout=use_quantizer_dropout)
         self.dec = Decoder(C=C, embedding_dim=embedding_dim, strides=strides[::-1])
 
     def forward(self, x):
         x = self.enc(x)
+        self.saved_encoding = x.detach().clone()  # for debugging, can be removed
         x = self.rvq(x)
         x = self.dec(x)
 
@@ -468,10 +523,8 @@ if __name__ == "__main__":
     model = SoundStream()
     model.eval()
 
-    x = torch.randn(1, 24319)
+    x = torch.randn(2, 24319)
 
     y = model(x)
 
     print(y.shape)
-
-
