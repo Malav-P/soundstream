@@ -14,7 +14,6 @@ Run this locally to set up port forwarding:
 ```bash
 ssh -N -L localhost:16006:atl1-1-02-003-19-1.pace.gatech.edu:6006 <your-login>@login-ice.pace.gatech.edu 
 ```
-
 Then go into your browser and type in `http://localhost:16006`
 
 ## Training Progress
@@ -25,3 +24,9 @@ Then go into your browser and type in `http://localhost:16006`
 |----------|------------|------------------------|
 | 50k      | [🔊 Real 50k](media/real_50k.wav) | [🤖 Fake 50k](media/fake_50k.wav) |
 | 100k     | _Coming soon_ | _Coming soon_ |
+
+
+| Metric   | 50k Steps                     | 
+|----------|------------------------------|
+| Loss     | ![Loss 50k](media/loss_50k.png) |
+
