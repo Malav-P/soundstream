@@ -26,7 +26,12 @@ Then go into your browser and type in `http://localhost:16006`
 | 100k     | _Coming soon_ | _Coming soon_ |
 
 
-| Metric   | 50k Steps                     | 
+| Metric   |                    | 
 |----------|------------------------------|
-| Loss     | ![Loss 50k](media/loss_50k.png) |
+| Loss @ 50k | ![Loss 50k](media/loss_50k.png) |
+| Quantizers @ 50k | ![Q13 50k](media/q13_50k.png) |
+|  | ![Q46 50k](media/q46_50k.png) |
+|  | ![Q78 50k](media/q78_50k.png) |
+| Encoder Embeddings @ 50k | ![Enc 50k](media/enc_50k.png) |
+
 
