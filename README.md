@@ -16,3 +16,12 @@ ssh -N -L localhost:16006:atl1-1-02-003-19-1.pace.gatech.edu:6006 <your-login>@l
 ```
 
 Then go into your browser and type in `http://localhost:16006`
+
+## Training Progress
+
+### 🎧 Real vs. Fake Audio Samples
+
+| Timestep | Real Audio | Fake (Generated) Audio |
+|----------|------------|------------------------|
+| 50k      | [🔊 Real 50k](media/real_50k.wav) | [🤖 Fake 50k](media/fake_50k.wav) |
+| 100k     | _Coming soon_ | _Coming soon_ |
