@@ -23,8 +23,10 @@ Then go into your browser and type in `http://localhost:16006`
 | Timestep | Real Audio | Fake (Generated) Audio |
 |----------|------------|------------------------|
 | 50k      | [🔊 Real 50k](media/real_50k.wav) | [🤖 Fake 50k](media/fake_50k.wav) |
+| 80k      | [🔊 Real 80k](media/real_80k.wav) | [🤖 Fake 80k](media/fake_80k.wav) |
 | 100k     | _Coming soon_ | _Coming soon_ |
 
+### Training Curves
 
 | Metric   |                    | 
 |----------|------------------------------|
