@@ -35,5 +35,10 @@ Then go into your browser and type in `http://localhost:16006`
 |  | ![Q46 50k](media/q46_50k.png) |
 |  | ![Q78 50k](media/q78_50k.png) |
 | Encoder Embeddings @ 50k | ![Enc 50k](media/enc_50k.png) |
+| Loss @ 100k | ![L1 100k](media/loss_100k_1.png) |
+|  | ![L2 100k](media/loss_100k_2.png)  |
+|  | ![L3 100k](media/loss_100k_3.png)  |
+| Encoder Embeddings @ 100k | ![Enc 50k](media/enc_100k.png) |
+
 
 
