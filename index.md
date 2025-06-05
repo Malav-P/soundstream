@@ -39,7 +39,7 @@ weights=(1.0, 0.1, 0.01, 1.0, 1.0), # (adversarial loss, feature loss, multi_spe
 
 ### 🎧 Real vs. Fake Audio Samples
 
-We report a ViSQOL score of 2.40 which is well below the numbers reported in the original soundstream paper. Not sure why. Suggestions welcome.
+We take 100 samples from the `dev-clean` subset of LibriTTS for testing. We report a ViSQOL score of 2.40 which is well below the numbers reported in the original soundstream paper. Not sure why. Suggestions welcome.
 
 | Timestep | Real Audio | Fake (Generated) Audio |
 |----------|------------|------------------------|
