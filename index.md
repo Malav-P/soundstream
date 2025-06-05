@@ -6,6 +6,8 @@ libritts_dataset = torchaudio.datasets.LIBRITTS('.', download=True)
 ```
 ## Training
 
+Traning is done a single A100-80GB GPU with 8 CPU threads. 7 threads are used for dataloading.
+
 We first did generator warmup ( by calling `generator_warmup()` in `train.py`) for 50k iterations. Parameters for training were
 
 ```python
