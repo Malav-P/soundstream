@@ -28,17 +28,17 @@ Then go into your browser and type in `http://localhost:16006`
 
 ### Training Curves
 
+For codebook diversity metric, score of 1 implies codebooks are used unformly (GOOD). Score of 0 implies only one codebook vector is being used (BAD).
+
 | Metric   |                    | 
 |----------|------------------------------|
-| Loss @ 50k | ![Loss 50k](media/loss_50k.png) |
-| Quantizers @ 50k | ![Q13 50k](media/q13_50k.png) |
-|  | ![Q46 50k](media/q46_50k.png) |
-|  | ![Q78 50k](media/q78_50k.png) |
-| Encoder Embeddings @ 50k | ![Enc 50k](media/enc_50k.png) |
-| Loss @ 100k | ![L1 100k](media/loss_100k_1.png) |
-|  | ![L2 100k](media/loss_100k_2.png)  |
-|  | ![L3 100k](media/loss_100k_3.png)  |
-| Encoder Embeddings @ 100k | ![Enc 50k](media/enc_100k.png) |
+| Loss  | ![Loss 1](media/loss1.png) |
+|       | ![Loss 2](media/loss2.png) |
+| Encoder Embeddings L2 Norm| ![Enc 50k](media/enc_norm.png) |
+| Codebook Diversity | ![Entropy 1](media/entropy1.png)  |
+|                    | ![Entropy 2](media/entropy2.png)  |
+|                    | ![Entropy 3](media/entropy3.png)  |
+
 
 
 

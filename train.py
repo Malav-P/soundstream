@@ -4,38 +4,13 @@ import torch.nn.functional as F
 from torch.optim.lr_scheduler import SequentialLR, LinearLR, ConstantLR
 
 from tqdm import tqdm
+import warnings
+import math
 
 from model import SoundStream, STFTDiscriminator, WaveDiscriminator, generator_loss, discriminator_loss
 from model import generator_reconstruction_loss, generator_multispectral_reconstruction_loss, commit_loss
 
-import torch
 from torch.utils.tensorboard import SummaryWriter
-
-num_epochs = 1
-batch_size = 128
-max_grad_norm = 0.5
-warmup_steps = 1000
-lr=2e-4
-betas = (0.9, 0.99)
-max_iter = 50000
-rq_ema_gamma = 0.95
-
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-writer = SummaryWriter()
-
-
-G = SoundStream(C=32,
-                rq_ema_gamma=rq_ema_gamma).to(device)
-# stft_D = STFTDiscriminator(C=16).to(device)
-# wave_D = WaveDiscriminator().to(device)
-
-
-G_optimizer = torch.optim.Adam(G.parameters()     , lr=lr, betas=betas)
-G_warmup_scheduler = LinearLR(G_optimizer, start_factor=1e-6, end_factor=1.0, total_iters=warmup_steps)
-G_constant_scheduler = ConstantLR(G_optimizer, factor=1.0, total_iters=1) 
-G_scheduler = SequentialLR(G_optimizer, schedulers=[G_warmup_scheduler, G_constant_scheduler], milestones=[warmup_steps])
-
-# D_optimizer = torch.optim.Adam(list(stft_D.parameters()) + list(wave_D.parameters()), lr=1e-4, betas=(0.5, 0.9))
 
 def collate_fn(batch, target_length=24000):
     processed_batch = []
@@ -53,73 +28,161 @@ def collate_fn(batch, target_length=24000):
     
     return torch.stack(processed_batch)
 
-librtts_data = torchaudio.datasets.LIBRITTS('.', download=False)
-data_loader = torch.utils.data.DataLoader(
-    librtts_data,
-    batch_size=batch_size,
-    shuffle=True,
-    collate_fn=collate_fn,
-    num_workers=7)
+if __name__ == "__main__":
 
-n_iter = 0
-done = False
-while not done:
-    for x in tqdm(data_loader):
+    num_epochs = 1
+    batch_size = 128
+    max_grad_norm = 0.5
+    warmup_steps = 1000
+    G_lr=2e-4
+    D_lr=1e-4
+    G_betas = (0.9, 0.99)
+    D_betas = (0.5, 0.9)
+    n_iter = 50000       
+    max_iter = 95000
+    rq_ema_gamma = 0.95
+    use_quantizer_dropout=True
+    C = 32
+    save_every = 5000 # save checkpoints every ____ iters
+    weights = (1.0, 0.01, 0.01, 1.0, 1.0) # (adv_loss, feat_loss, multi_spec_loss, recon_loss, commit_loss)
+    log_dir = "runs/training_0.01_feat_0.01_mspec/" # default to None
+    save_dir = "checkpoints/training_0.01_feat_0.01_mspec/"
 
-        x = x.to(device)
-        # # Train Discriminators
-        # with torch.no_grad():
-        #     Gx = G(x)
-        
-        # Dx =  [item[-1] for item in [stft_D(x) ] + wave_D(x) ] # only take the output feature map
-        # DGx = [item[-1] for item in [stft_D(Gx)] + wave_D(Gx)] # only take the output feature map
-
-        # D_loss = discriminator_loss(Dx, DGx)
-
-        # D_optimizer.zero_grad()
-        # D_loss.backward()
-        # D_optimizer.step()
-
-        # Train generator
-        Gx = G(x)
-
-        multi_spec_loss = generator_multispectral_reconstruction_loss(x, Gx)
-        recon_loss = generator_reconstruction_loss(x, Gx)
-        com_loss = commit_loss(G)
-        G_loss = multi_spec_loss + recon_loss + com_loss
-
-        current_lr = G_scheduler.get_last_lr()[0]  # returns a list (one per param group)
-        mean_enc_norm = torch.linalg.vector_norm(G.saved_encoding, dim=-1, ord=2).mean().item()
-        writer.add_scalar("Encoder/mean_l2norm_embedding", mean_enc_norm, n_iter)
-
-        writer.add_scalar("Loss/multi_spec_loss", multi_spec_loss, n_iter)
-        writer.add_scalar("Loss/recon_loss", recon_loss, n_iter)
-        writer.add_scalar("Loss/commit_loss", com_loss, n_iter)
-        writer.add_scalar("Scheduler/lr", current_lr, n_iter)
-
-        for i, vq in enumerate(G.rvq.vqs):
-            mean_norm = torch.linalg.vector_norm(vq.codebook, dim=-1, ord=2).mean().item()  # norm per vector
-            writer.add_scalar(f"Quantizers/l2norm_codebook_{i}", mean_norm, n_iter)
-           
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    writer = SummaryWriter(log_dir)
 
 
-        # with torch.no_grad():
-        #     Dx  = [stft_D(x) ] + wave_D(x )
-        #     DGx = [stft_D(Gx)] + wave_D(Gx)
+    G = SoundStream(C=C,
+                    rq_ema_gamma=rq_ema_gamma,
+                    use_quantizer_dropout=use_quantizer_dropout
+                    ).to(device)
+    stft_D = STFTDiscriminator(C=C).to(device)
+    wave_D = WaveDiscriminator().to(device)
 
-        # G_loss = generator_loss(x, Gx, Dx, DGx)
-        G_optimizer.zero_grad()
-        G_loss.backward()
-        torch.nn.utils.clip_grad_norm_(G.parameters(), max_grad_norm)
-        G_optimizer.step()
-        G_scheduler.step()
-        G.rvq.update_codebook()
+    try:
+        checkpoint_G = torch.load(save_dir + f'soundstream_{n_iter//1000}k.pth', map_location=device, weights_only=True)
+        G.load_state_dict(checkpoint_G)
 
-        n_iter += 1
-        if n_iter >= max_iter:
-            done = True
-            break
+    except FileNotFoundError as e:
+        warning_msg = f"\033[93m[WARNING] {e}\033[0m"
+        warnings.warn(warning_msg)
 
-torch.save(G.state_dict(), 'soundstream_weights.pth')
-writer.flush()
-writer.close()
+    try:
+        checkpoint_stft_D = torch.load(save_dir + f'stft_{n_iter//1000}k.pth'  , map_location=device, weights_only=True)
+        stft_D.load_state_dict(checkpoint_stft_D)
+
+    except FileNotFoundError as e:
+        warning_msg = f"\033[93m[WARNING] {e}\033[0m"
+        warnings.warn(warning_msg)
+
+    try:
+        checkpoint_wave_D = torch.load(save_dir + f'wave_{n_iter//1000}k.pth'  , map_location=device, weights_only=True)
+        wave_D.load_state_dict(checkpoint_wave_D)
+
+    except FileNotFoundError as e:
+        warning_msg = f"\033[93m[WARNING] {e}\033[0m"
+        warnings.warn(warning_msg)
+
+
+    G_optimizer = torch.optim.Adam(G.parameters(), lr=G_lr, betas=G_betas)
+    # G_warmup_scheduler = LinearLR(G_optimizer, start_factor=1e-6, end_factor=1.0, total_iters=warmup_steps)
+    # G_constant_scheduler = ConstantLR(G_optimizer, factor=1.0, total_iters=1) 
+    # G_scheduler = SequentialLR(G_optimizer, schedulers=[G_warmup_scheduler, G_constant_scheduler], milestones=[warmup_steps])
+
+    D_optimizer = torch.optim.Adam(list(stft_D.parameters()) + list(wave_D.parameters()), lr=D_lr, betas=D_betas)
+    # D_warmup_scheduler = LinearLR(D_optimizer, start_factor=1e-6, end_factor=1.0, total_iters=warmup_steps)  
+    # D_constant_scheduler = ConstantLR(D_optimizer, factor=1.0, total_iters=1) 
+    # D_scheduler = SequentialLR(D_optimizer, schedulers=[D_warmup_scheduler, D_constant_scheduler], milestones=[warmup_steps])
+
+
+    librtts_data = torchaudio.datasets.LIBRITTS('.', download=False)
+    data_loader = torch.utils.data.DataLoader(
+        librtts_data,
+        batch_size=batch_size,
+        shuffle=True,
+        collate_fn=collate_fn,
+        num_workers=7)
+
+
+    done = False
+    while not done:
+        for x in tqdm(data_loader):
+
+            x = x.to(device)
+
+            Gx = G(x)
+            Dx =  [stft_D(x) ] + wave_D(x) 
+
+            ######################### DISCRIMINATOR TRAINING #########################
+
+            DGx = [stft_D(Gx.detach())] + wave_D(Gx.detach())
+
+            Dx_outputs_only  = [item[-1].squeeze() for item in Dx ]
+            DGx_outputs_only = [item[-1].squeeze() for item in DGx]
+
+            D_loss = discriminator_loss(Dx_outputs_only, DGx_outputs_only)
+
+            D_optimizer.zero_grad()
+            D_loss.backward()
+            torch.nn.utils.clip_grad_norm_(list(stft_D.parameters()) + list(wave_D.parameters()), max_grad_norm)
+            D_optimizer.step()
+            # D_scheduler.step()
+
+            ######################### GENERATOR TRAINING ##########################
+
+            DGx = [stft_D(Gx)] + wave_D(Gx)
+            Dx = [[d.detach() for d in featmaps] for featmaps in Dx]
+
+            G_loss, (adv_loss, feat_loss, multi_spec_loss, recon_loss, com_loss) = generator_loss(G, x, Gx, Dx, DGx, weights=weights)
+
+            G_optimizer.zero_grad()
+            G_loss.backward()
+            torch.nn.utils.clip_grad_norm_(G.parameters(), max_grad_norm)
+            G_optimizer.step()
+            # G_scheduler.step()
+
+            G.rvq.update_codebook()
+
+            ##### LOGGING ######################
+
+            # current_lr    = G_scheduler.get_last_lr()[0] 
+            # writer.add_scalar("Scheduler/lr", current_lr, n_iter)
+
+            writer.add_scalar("Loss/disc_loss", D_loss, n_iter)
+
+            mean_enc_norm = torch.linalg.vector_norm(G.saved_encoding, dim=-1, ord=2).mean().item()
+            writer.add_scalar("Encoder/mean_l2norm_embedding", mean_enc_norm, n_iter)
+
+            writer.add_scalar("Loss/adv_loss", adv_loss, n_iter)
+            writer.add_scalar("Loss/feat_loss", feat_loss, n_iter)
+            writer.add_scalar("Loss/multi_spec_loss", multi_spec_loss, n_iter)
+            writer.add_scalar("Loss/recon_loss", recon_loss, n_iter)
+            writer.add_scalar("Loss/commit_loss", com_loss, n_iter)
+            writer.add_scalar("Loss/gen_loss", G_loss, n_iter)
+
+
+            for i, vq in enumerate(G.rvq.vqs):
+                mean_norm = torch.linalg.vector_norm(vq.codebook, dim=-1, ord=2).mean().item()  # norm per vector
+                writer.add_scalar(f"Quantizers/l2norm_codebook_{i}", mean_norm, n_iter)
+
+                probs  = vq.N / torch.sum(vq.N)
+                codebook_entropy = - (probs * torch.log2(probs)).sum().item() / math.log2(vq.codebook_size)   # 1 means uniform distribution (GOOD), 0 means dirac delta distribution (BAD)
+                writer.add_scalar(f"Quantizers/entropy_codebook_{i}", codebook_entropy, n_iter)
+
+
+            
+            n_iter += 1
+
+            if n_iter % save_every == 0:
+                torch.save(G.state_dict(), save_dir + f'soundstream_{n_iter//1000}k.pth')
+                torch.save(stft_D.state_dict(), save_dir + f'stft_{n_iter//1000}k.pth')
+                torch.save(wave_D.state_dict(), save_dir + f'wave_{n_iter//1000}k.pth')
+
+            if n_iter >= max_iter:
+                done = True
+                break
+
+
+
+    writer.flush()
+    writer.close()

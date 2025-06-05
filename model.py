@@ -7,8 +7,7 @@ from torchaudio import functional as aF
 class CausalConv1d(nn.Conv1d):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        self.causal_padding = (self.dilation[0] * (self.kernel_size[0] - 1) + (1 - self.stride[0]),
-                               0)
+        self.causal_padding = (self.dilation[0] * (self.kernel_size[0] - 1) + (1 - self.stride[0]), 0) # https://github.com/lucidrains/audiolm-pytorch/issues/8#issuecomment-1293727896
 
     def forward(self, x):
         return self._conv_forward(F.pad(x, self.causal_padding), self.weight, self.bias)
@@ -56,7 +55,6 @@ class EncoderBlock(nn.Module):
 class Encoder(nn.Module):
     def __init__(self, C, embedding_dim, strides=(2, 4, 5, 8)):
         super().__init__()
-        self.C = C
 
         self.layers = nn.Sequential(
             CausalConv1d(in_channels=1, out_channels=C, kernel_size=7),
@@ -132,23 +130,21 @@ class VectorQuantizer(nn.Module):
         self.saved_indices = torch.argmin(dist, dim=-1)                     # (B,S)
         quantized = self.codebook[self.saved_indices]                       # (B, S, D)
 
-        return x + (quantized - x).detach()
+        return x + (quantized - x).detach() # straight through estimator
     
     def update_codebook(self):
-        mapped_idxs = self.saved_indices.unique(sorted=True)
+        saved_input_detached = self.saved_input.detach().flatten(0,1) # (B, S, D) -> (B*S, D) 
+
+        mapped_idxs, inverse_indices = torch.unique(self.saved_indices.flatten(), return_inverse=True, sorted=True)  # (num_unique_idxs,) , (B*S,)
+        group_sizes = torch.bincount(inverse_indices)
+        group_sums = torch.zeros(len(mapped_idxs), self.codebook_dim, 
+                           device=saved_input_detached.device, dtype=saved_input_detached.dtype)  # (num_unique_idxs, D)
+        group_sums.scatter_add_(dim=0, index=inverse_indices.unsqueeze(1).expand(-1, self.codebook_dim), 
+                                src=saved_input_detached)
+
         all_indices = torch.arange(self.codebook_size).to(mapped_idxs.device)
         mask = ~torch.isin(all_indices, mapped_idxs) 
         not_mapped_idxs = all_indices[mask]
-
-        group_sizes = torch.empty(len(mapped_idxs)).to(mapped_idxs.device)
-        group_sums = torch.empty(len(mapped_idxs), self.codebook_dim).to(mapped_idxs.device)
-
-        saved_input_detached = self.saved_input.detach()
-
-        for i, idx in enumerate(mapped_idxs):
-            group = saved_input_detached[self.saved_indices==idx]
-            group_sizes[i] = group.shape[0]
-            group_sums[i] = group.sum(dim=0)
 
         self.N[mapped_idxs] = self.gamma * self.N[mapped_idxs] + (1-self.gamma) * group_sizes
         self.m[mapped_idxs] = self.gamma * self.m[mapped_idxs] + (1-self.gamma) * group_sums
@@ -166,9 +162,19 @@ class VectorQuantizer(nn.Module):
 
         # Flatten input to choose random replacements
         replacement_candidates = self.saved_input.detach().flatten(0, 1)
-        replacement_idxs = torch.randperm(len(replacement_candidates))[:to_be_pruned.sum()]
+        num_replacement_candidates = len(replacement_candidates)
+        num_to_replace = to_be_pruned.sum()
 
+        excess = num_to_replace - num_replacement_candidates
+        if excess > 0 :
+            true_indices = torch.nonzero(to_be_pruned, as_tuple=False).squeeze(1)
+            drop_indices = true_indices[torch.randperm(true_indices.size(0))[:excess]]
+            to_be_pruned[drop_indices] = False
+            num_to_replace = num_replacement_candidates
+
+        replacement_idxs = torch.randperm(num_replacement_candidates)[:num_to_replace]
         replacements = replacement_candidates[replacement_idxs]
+
 
         # Update codebook, m, and N in-place using masks
         self.codebook[to_be_pruned] = replacements
@@ -230,7 +236,6 @@ class ResidualUnit2D(nn.Module):
 class STFTDiscriminator(nn.Module):
     def __init__(self, C, n_fft=1024, H=256, W=1024):
         super().__init__()
-        self.C = C
         self.H = H
         self.W = W
         self.n_fft = n_fft
@@ -251,14 +256,15 @@ class STFTDiscriminator(nn.Module):
 
 
     def forward(self, x):
+        x = x.squeeze() # (B, 1, T) -> (B, T)
         x = torch.view_as_real(torch.stft(x,
                                           n_fft=self.n_fft,
                                           hop_length=self.H,
                                           win_length=self.W,
-                                          window = torch.hann_window(self.W).to(x.device),
-                                          return_complex=True)
-                                          )
-        x = x.permute(0, 3, 1, 2)
+                                          window=torch.hann_window(self.W).to(x.device),
+                                          return_complex=True))
+
+        x = x.permute(0, 3, 1, 2) # (batch, N, time, channels) -> (batch, channels, N, time)
         feature_maps = []
         for layer in self.layers:
             x = layer(x)
@@ -300,7 +306,6 @@ class WaveDiscriminatorBlock(nn.Module):
         ])
 
     def forward(self, x):
-        x = x.unsqueeze(1)
         feature_maps = []
         for layer in self.layers:
             x = layer(x)
@@ -311,8 +316,8 @@ class WaveDiscriminator(nn.Module):
     def __init__(self, downsample_factors = [2, 4]):
         super().__init__()
     
-        self.K = len(downsample_factors) + 1
-        self.Ds = nn.ModuleList([WaveDiscriminatorBlock() for _ in range(self.K)])
+        K = len(downsample_factors) + 1
+        self.Ds = nn.ModuleList([WaveDiscriminatorBlock() for _ in range(K)])
         self.poolers = nn.ModuleList([nn.Identity()] + [nn.AvgPool1d(kernel_size=4, stride=s) for s in downsample_factors])
 
     def forward(self, x):
@@ -320,7 +325,6 @@ class WaveDiscriminator(nn.Module):
         for pooler, discriminator in zip(self.poolers, self.Ds):
             y = discriminator(pooler(x))
             outputs.append(y)
-
         return outputs
     
 def discriminator_loss(Dx, DGx):
@@ -337,18 +341,15 @@ def discriminator_loss(Dx, DGx):
     """
     K  = len(Dx)
     B  = Dx[0].shape[0]               
-    losses = torch.empty(K, B)
+    losses = torch.empty(K, 2, B)
 
-    for i, output in enumerate(Dx):
-        losses[i] = torch.mean((1-output).clamp(min=0), dim=-1) # (B,)
-    loss1 = losses.mean()
+    for k, (real, fake) in enumerate(zip(Dx, DGx)):
+        losses[k, 0] = torch.mean(F.relu(1-real), dim=-1) # (B, T_k) -> (B,)
+        losses[k, 1] = torch.mean(F.relu(1+fake), dim=-1) # (B, T_k) -> (B,)
 
+    loss = losses.mean(dim=(0, -1)).sum() # (K, 2, B) Mean -> (2,) Sum -> (1,)
 
-    for i, output in enumerate(DGx):
-        losses[i] = torch.mean((1+output).clamp(min=0), dim=-1) # (B,)
-    loss2 = losses.mean()
-
-    return loss1 + loss2
+    return loss
 
 def generator_adversarial_loss(DGx):
     """
@@ -363,34 +364,43 @@ def generator_adversarial_loss(DGx):
     B  = DGx[0].shape[0]               
     losses = torch.empty(K, B)
 
-    for i, output in enumerate(DGx):
-        losses[i] = torch.mean((1-output).clamp(min=0), dim=-1) # (B,)
-    loss = losses.mean()
+    for k, fake in enumerate(DGx):
+        losses[k] = torch.mean(F.relu(1-fake), dim=-1) # (B, T_k) -> (B,)
+
+    loss = losses.mean() # (K, B) -> (1,)
 
     return loss
 
-def generator_feature_loss(Dx, DGx):
+def generator_feature_loss(Dx_intermediates, DGx_intermediates):
     """
     Compute the generator feature loss
 
     Args:
-        Dx (List[ List[torch.tensor] ]) : List of length K. k-th item is a list of torch tensors representing feature maps 
-                                          from the forward pass of the k-th discriminator
+        Dx_intermediates (List[ List[torch.tensor] ]) : List of length K. k-th item is a list of  feature maps 
+                                          from the forward pass of the k-th discriminator on real sample
+        DGx_intermediates (List[ List[torch.tensor] ]) : List of length K. k-th item is a list of feature maps 
+                                          from the forward pass of the k-th discriminator on generated sample
+    TODO:  might be better to just do l1 loss over these maps
     """
-    K = len(Dx)
-    B = Dx[0][0].shape[0]
+    K = len(Dx_intermediates)
+    B = Dx_intermediates[0][0].shape[0]
     losses = torch.empty(K,B)
-    for j, (out1, out2) in enumerate(zip(Dx, DGx)):
-        L = len(out1)
-        mylist = torch.empty(L, B)
-        for k, (real, fake) in enumerate(zip(out1, out2)):
-            dims_to_reduce = tuple(i for i in range(real.ndim) if i != 0 and i != real.ndim - 1)
-            real_minus_fake = (real-fake).sum(dims_to_reduce)
-            mylist[k] = torch.mean(torch.abs(real_minus_fake), dim=-1)
+    for k, (Dx_featmaps, DGx_featmaps) in enumerate(zip(Dx_intermediates, DGx_intermediates)):
+
+        L = len(Dx_featmaps) # Number of layers (i.e. number of feature maps)
+        layer_losses = torch.empty(L, B)
+
+        for l, (real, fake) in enumerate(zip(Dx_featmaps, DGx_featmaps)):
+            # Reduce all dimensions except batch (0) and last (e.g., time) dimension
+            dims_to_reduce = torch.arange(real.ndim)[1:-1].tolist() # need to reduce all dims except batch dim(first) and time dim (last)
+            diff = torch.abs(real-fake)
+            reduced = torch.sum(diff, dim=dims_to_reduce)        # Sum over extraneous axes (B, ..., T) -> (B, T)
+            layer_losses[l] = torch.mean(reduced, dim=-1)    # Mean over time (B, T) -> (B,)
         
-        losses[j] = mylist.mean(dim=0) # shape (B,)
-    loss = losses.mean()
-    print(loss)
+        losses[k] = layer_losses.mean(dim=0) # Mean over number of layers (L, B) -> (B,)
+
+    loss = losses.mean() # Mean over batch (B) and discriminators (K)   (K, B) -> (1,)
+
     return loss
 
 def generator_reconstruction_loss(x, Gx):
@@ -417,33 +427,42 @@ def generator_multispectral_reconstruction_loss(x, Gx, windows=None, eps=1e-20):
         fake_spec = _compute_mel_spectrogram(Gx, sample_rate=24000, s=s, n_mels=64)
         l1_loss = torch.linalg.vector_norm(real_spec - fake_spec, ord=1, dim=-2).mean()
         l2_loss = torch.linalg.vector_norm(torch.log(real_spec.clamp(min=eps)) - torch.log(fake_spec.clamp(min=eps)), ord=2, dim=-2).mean()
-        loss += l1_loss + alpha * l2_loss
+        loss = loss + l1_loss + alpha * l2_loss
 
     return loss 
 
-def generator_loss(x, Gx, Dx, DGx, weights=None):
+def generator_loss(G, x, Gx, Dx, DGx, weights=None):
     """
     Compute the total generator loss which is a weighted combination of the adversarial, feature, and reconstruction losses
 
     Args:
+        G (nn.Module) : the soundstream model
         x (torch.tensor): shape (B, T) batched raw audio waveforms
         Gx (torch.tensor): shape (B, T) batched fake audio waveforms
-        Dx (List[List[torch.tensor]]): Feature maps from internal layers of each discriminator. k-th item is list
+        Dx (List[List[torch.tensor]]): Feature maps from layers of each discriminator. k-th item is list
                                        with the feature maps from k-th discriminator
         DGx (List[List[torch.tensor]]): same as above, but for a waveform from the generator
+
+    
+    Returns:
+        loss, (adv_loss, feat_loss, multi_spec_loss, rec_loss, com_loss)
     """
     if not weights:
-        weights = [1, 100, 0.02]
+        weights = (1, 100, 1e-2, 1, 1)
 
-    disc_outputs = [disc[-1].squeeze() for disc in DGx]
+    DGx_logits        = [feat_maps[-1].squeeze() for feat_maps in DGx]
+    Dx_intermediates  = [feat_maps[:-1] for feat_maps in Dx]
+    DGx_intermediates = [feat_maps[:-1] for feat_maps in DGx]
 
-    adv_loss = generator_adversarial_loss(disc_outputs)
-    feat_loss = generator_feature_loss(Dx, DGx)
-    rec_loss = generator_reconstruction_loss(x, Gx)
+    adv_loss        = generator_adversarial_loss(DGx_logits)
+    feat_loss       = generator_feature_loss(Dx_intermediates, DGx_intermediates)
+    multi_spec_loss = generator_multispectral_reconstruction_loss(x, Gx)
+    rec_loss        = generator_reconstruction_loss(x, Gx)
+    com_loss        = commit_loss(G)
 
-    loss = weights[0]*adv_loss + weights[1]*feat_loss + weights[2]*rec_loss
+    loss = weights[0]*adv_loss + weights[1]*feat_loss + weights[2]*multi_spec_loss + weights[3]*rec_loss + weights[4]*com_loss
 
-    return loss
+    return loss, (adv_loss.detach(), feat_loss.detach(), multi_spec_loss.detach(), rec_loss.detach(), com_loss.detach())
 
 def commit_loss(soundstream_model):
     """
@@ -520,11 +539,29 @@ class SoundStream(nn.Module):
 
 
 if __name__ == "__main__":
-    model = SoundStream()
+
+    from torch.profiler import profile, record_function, ProfilerActivity
+    import time
+
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+    model = SoundStream().to(device)
     model.eval()
 
-    x = torch.randn(2, 24319)
+    x = torch.randn(128,1,24000).to(device)
 
-    y = model(x)
+    with profile(activities=[
+            ProfilerActivity.CPU,
+            ProfilerActivity.CUDA],  # Only include CUDA if using GPU
+            record_shapes=True) as prof:
+        
+        with record_function("model_inference"):
+            with torch.no_grad():
+                model(x)
+                start = time.perf_counter()
+                model.rvq.update_codebook()
+                end = time.perf_counter()
 
-    print(y.shape)
+                print(end-start)
+
+    # print(prof.key_averages().table(sort_by="self_cpu_time_total", row_limit=10))
