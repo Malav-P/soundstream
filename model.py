@@ -431,7 +431,7 @@ def generator_multispectral_reconstruction_loss(x, Gx, windows=None, eps=1e-20):
 
     return loss 
 
-def generator_loss(G, x, Gx, Dx, DGx, weights=None):
+def generator_loss(G, x, Gx, Dx=None, DGx=None, weights=None):
     """
     Compute the total generator loss which is a weighted combination of the adversarial, feature, and reconstruction losses
 
@@ -447,15 +447,23 @@ def generator_loss(G, x, Gx, Dx, DGx, weights=None):
     Returns:
         loss, (adv_loss, feat_loss, multi_spec_loss, rec_loss, com_loss)
     """
-    if not weights:
+    if weights is None:
         weights = (1, 100, 1e-2, 1, 1)
 
-    DGx_logits        = [feat_maps[-1].squeeze() for feat_maps in DGx]
-    Dx_intermediates  = [feat_maps[:-1] for feat_maps in Dx]
-    DGx_intermediates = [feat_maps[:-1] for feat_maps in DGx]
+    
+    if (Dx is not None) and  (DGx is not None):
+        DGx_logits        = [feat_maps[-1].squeeze() for feat_maps in DGx]
+        Dx_intermediates  = [feat_maps[:-1] for feat_maps in Dx]
+        DGx_intermediates = [feat_maps[:-1] for feat_maps in DGx]
 
-    adv_loss        = generator_adversarial_loss(DGx_logits)
-    feat_loss       = generator_feature_loss(Dx_intermediates, DGx_intermediates)
+        adv_loss        = generator_adversarial_loss(DGx_logits)
+        feat_loss       = generator_feature_loss(Dx_intermediates, DGx_intermediates)
+
+    else:
+        adv_loss = torch.tensor([0.]).to(x.device)
+        feat_loss = torch.tensor([0.]).to(x.device)
+
+
     multi_spec_loss = generator_multispectral_reconstruction_loss(x, Gx)
     rec_loss        = generator_reconstruction_loss(x, Gx)
     com_loss        = commit_loss(G)
