@@ -1,6 +1,39 @@
+## Dataset
+We use LibriTTS dataset, specifically with `train-clean-100` subset. It can be downloaded and used in pytorch with the following line:
+
+```python
+libritts_dataset = torchaudio.datasets.LIBRITTS('.', download=True)
+```
 ## Training
 
-We first did generator warmup (`generator_warmup()`) with default arguments for 50k iterations, followed by adversarial training (`adversarial_training()`) with default arguments for another 50k iterations.
+We first did generator warmup ( by calling `generator_warmup()` in `train.py`) for 50k iterations. Parameters for training were
+
+```python
+batch_size=128,
+max_grad_norm=0.5,      # gradients are clipped to avoid excessively large updates
+warmup_steps=1000,      # number of warmup steps for linear warmup schedule
+G_lr=2e-4,              # learning rate
+G_betas=(0.9, 0.99),    # adam optimizer betas
+rq_ema_gamma=0.95,      # vector quantizer codebook exponential moving average update gamma
+use_quantizer_dropout=True, # wheter to use quantizer dropout
+C=32,                       # soundstream channel parameter
+weights=(0., 0., 1.0, 1.0, 1.0), # (adversarial loss, feature loss, multi_spectral loss, reconstruction loss, commitment loss)
+```
+
+We then followed with adversarial training (`adversarial_training()` in `train.py`) for another 50k iterations.
+
+```python
+batch_size=128,
+max_grad_norm=0.5,
+G_lr=2e-4,
+D_lr=1e-4,
+G_betas=(0.9, 0.99),
+D_betas=(0.5, 0.9),
+rq_ema_gamma=0.95,
+use_quantizer_dropout=True,
+C=32,
+weights=(1.0, 0.1, 0.01, 1.0, 1.0), # (adversarial loss, feature loss, multi_spectral loss, reconstruction loss, commitment loss)
+```
 
 ### 🎧 Real vs. Fake Audio Samples
 
@@ -12,7 +45,7 @@ We first did generator warmup (`generator_warmup()`) with default arguments for 
 
 ### Training Curves
 
-For codebook diversity metric, score of 1 implies codebooks are used unformly (GOOD). Score of 0 implies only one codebook vector is being used (BAD).
+For codebook diversity metric, score of 1 implies codebooks are used uniformly (GOOD). Score of 0 implies only one codebook vector is being used (BAD).
 
 | Metric   |                    | 
 |----------|------------------------------|
