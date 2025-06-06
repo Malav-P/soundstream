@@ -113,8 +113,8 @@ class VectorQuantizer(nn.Module):
         self.register_buffer('codebook', torch.empty(codebook_size, codebook_dim))
         self.register_buffer('N', torch.ones(codebook_size))
         self.register_buffer('m', self.codebook.detach().clone())
-        self.saved_input = None
-        self.saved_indices = None
+        self.saved_input = []
+        self.saved_indices = []
 
         self.gamma = gamma
         self.dead_codebook_ema_threshold = dead_codebook_ema_threshold
@@ -122,20 +122,22 @@ class VectorQuantizer(nn.Module):
         torch.nn.init.kaiming_uniform_(self.codebook)
 
     def forward(self, x):
-        self.saved_input = x
+        self.saved_input.append(x)
         x_norm = (x ** 2).sum(dim=-1, keepdim=True)                  # (B,S,1)
         codebook_norm = (self.codebook ** 2).sum(dim=-1)             # (N,)
         dist = x_norm + codebook_norm.unsqueeze(0).unsqueeze(0) - 2 * x @ self.codebook.t()   # (B,S,N)
 
-        self.saved_indices = torch.argmin(dist, dim=-1)                     # (B,S)
-        quantized = self.codebook[self.saved_indices]                       # (B, S, D)
+        indices = torch.argmin(dist, dim=-1)
+        self.saved_indices.append(indices.clone())                     # (B,S)
+        quantized = self.codebook[indices]                       # (B, S, D)
 
         return x + (quantized - x).detach() # straight through estimator
     
     def update_codebook(self):
-        saved_input_detached = self.saved_input.detach().flatten(0,1) # (B, S, D) -> (B*S, D) 
+        saved_input_detached = torch.cat(self.saved_input, dim=0).detach().flatten(0,1) # (B, S, D) -> (N*B, S, D) -> (B*S*N, D) 
+        saved_indices = torch.cat(self.saved_indices, dim=0).flatten() # (B, S) -> (N*B, S) -> (N*B*S,)
 
-        mapped_idxs, inverse_indices = torch.unique(self.saved_indices.flatten(), return_inverse=True, sorted=True)  # (num_unique_idxs,) , (B*S,)
+        mapped_idxs, inverse_indices = torch.unique(saved_indices, return_inverse=True, sorted=True)  # (num_unique_idxs,) , (B*S,)
         group_sizes = torch.bincount(inverse_indices)
         group_sums = torch.zeros(len(mapped_idxs), self.codebook_dim, 
                            device=saved_input_detached.device, dtype=saved_input_detached.dtype)  # (num_unique_idxs, D)
@@ -155,13 +157,16 @@ class VectorQuantizer(nn.Module):
 
         self.prune_unused_codes()
 
+        self.saved_input = []
+        self.saved_indices = []
+
     def prune_unused_codes(self):
         to_be_pruned = self.N < self.dead_codebook_ema_threshold
         if not torch.any(to_be_pruned):
             return
 
         # Flatten input to choose random replacements
-        replacement_candidates = self.saved_input.detach().flatten(0, 1)
+        replacement_candidates = torch.cat(self.saved_input, dim=0).detach().flatten(0,1)
         num_replacement_candidates = len(replacement_candidates)
         num_to_replace = to_be_pruned.sum()
 
@@ -480,8 +485,8 @@ def commit_loss(soundstream_model):
 
     loss = 0
     for vq in rvq.vqs[:rvq.nq]:
-        x = vq.saved_input
-        quantized = vq.codebook[vq.saved_indices]
+        x = vq.saved_input[-1]
+        quantized = vq.codebook[vq.saved_indices[-1]]
         loss = loss + F.mse_loss(quantized.detach(), x)
 
     return loss

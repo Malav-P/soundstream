@@ -138,6 +138,8 @@ def adversarial_training(batch_size=128,
                          D_lr=1e-4,
                          G_betas=(0.9, 0.99),
                          D_betas=(0.5, 0.9),
+                         update_D_every=1,
+                         update_codebook_every=1,
                          n_iter=50000,
                          max_iter=95000,
                          rq_ema_gamma=0.95,
@@ -206,17 +208,21 @@ def adversarial_training(batch_size=128,
 
             ######################### DISCRIMINATOR TRAINING #########################
 
-            DGx = [stft_D(Gx.detach())] + wave_D(Gx.detach())
+            if n_iter % update_D_every == 0:
+                DGx = [stft_D(Gx.detach())] + wave_D(Gx.detach())
 
-            Dx_outputs_only  = [item[-1].squeeze() for item in Dx ]
-            DGx_outputs_only = [item[-1].squeeze() for item in DGx]
+                Dx_outputs_only  = [item[-1].squeeze() for item in Dx ]
+                DGx_outputs_only = [item[-1].squeeze() for item in DGx]
 
-            D_loss = discriminator_loss(Dx_outputs_only, DGx_outputs_only)
+                D_loss = discriminator_loss(Dx_outputs_only, DGx_outputs_only)
 
-            D_optimizer.zero_grad()
-            D_loss.backward()
-            torch.nn.utils.clip_grad_norm_(list(stft_D.parameters()) + list(wave_D.parameters()), max_grad_norm)
-            D_optimizer.step()
+                D_optimizer.zero_grad()
+                D_loss.backward()
+                torch.nn.utils.clip_grad_norm_(list(stft_D.parameters()) + list(wave_D.parameters()), max_grad_norm)
+                D_optimizer.step()
+
+                ### logging  ####
+                writer.add_scalar("Loss/disc_loss", D_loss, n_iter)
 
             ######################### GENERATOR TRAINING ##########################
 
@@ -230,12 +236,10 @@ def adversarial_training(batch_size=128,
             torch.nn.utils.clip_grad_norm_(G.parameters(), max_grad_norm)
             G_optimizer.step()
 
-
-            G.rvq.update_codebook()
+            if n_iter % update_codebook_every == 0:
+                G.rvq.update_codebook()   # this must happen after com_loss is calculated, since this call resets the saved_input buffer to empty list
 
             ##### LOGGING ######################
-
-            writer.add_scalar("Loss/disc_loss", D_loss, n_iter)
 
             mean_enc_norm = torch.linalg.vector_norm(G.saved_encoding, dim=-1, ord=2).mean().item()
             writer.add_scalar("Encoder/mean_l2norm_embedding", mean_enc_norm, n_iter)
@@ -275,5 +279,16 @@ def adversarial_training(batch_size=128,
 
 if __name__ == "__main__":
 
-    generator_warmup(log_dir="runs/generator_warmup/",
-                     save_dir="checkpoints/generator_warmup/")
+    # generator_warmup(log_dir="runs/generator_warmup/",
+    #                  save_dir="checkpoints/generator_warmup/")
+
+    adversarial_training(log_dir="runs/training_0.1_feat_0.01_mspec_bs16/",
+                         save_dir="checkpoints/training_0.1_feat_0.01_mspec_bs16/",
+                         weights=(1.0, 0.1, 0.01, 1.0, 1.0),
+                         G_lr=1e-4,
+                         D_lr=1e-4,
+                         update_D_every=3,
+                         update_codebook_every=8,   # typically make sure batch_size * update_codebook_every = 128 to avoid embeddings from blowing up
+                         batch_size=16,
+                         n_iter=100000,
+                         max_iter=150000)
