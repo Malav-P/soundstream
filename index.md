@@ -8,7 +8,7 @@ libritts_dataset = torchaudio.datasets.LIBRITTS('.', download=True)
 
 Traning is done a single Nvidia L40S GPU with 8 CPU threads. 7 threads are used for dataloading.
 
-We first did generator warmup ( by calling `generator_warmup()` in `train.py`) for 50k iterations. Parameters for training were
+We first did generator warmup ( by calling `generator_warmup()` in `train.py`) for 50k iterations (~ 4-5 hours). Parameters for training were
 
 ```python
 batch_size=128,
@@ -17,7 +17,7 @@ warmup_steps=1000,      # number of warmup steps for linear warmup schedule
 G_lr=2e-4,              # learning rate
 G_betas=(0.9, 0.99),    # adam optimizer betas
 rq_ema_gamma=0.95,      # vector quantizer codebook exponential moving average update gamma
-use_quantizer_dropout=True, # wheter to use quantizer dropout
+use_quantizer_dropout=True, # whether to use quantizer dropout
 C=32,                       # soundstream channel parameter
 weights=(0., 0., 1.0, 1.0, 1.0), # (adversarial loss, feature loss, multi_spectral loss, reconstruction loss, commitment loss)
 ```
@@ -31,8 +31,8 @@ G_lr=1e-4,
 D_lr=1e-4,
 G_betas=(0.9, 0.99),
 D_betas=(0.5, 0.9),
-update_D_every=1,
-update_codebook_every=8,
+update_D_every=1,                   # update the discriminator every ___ iterations
+update_codebook_every=8,            # update the RVQ codebooks every ___ iterations
 rq_ema_gamma=0.95,
 use_quantizer_dropout=True,
 C=32,
@@ -45,9 +45,9 @@ We take 100 samples from the `dev-clean` subset of LibriTTS for testing. We repo
 
 | Real Audio | Iteration No. |  Fake (Generated) Audio |
 |----------|------------|------------------------|
-|[🔊 Real 50k](media/5289.wav) | 50k      |  [🤖 Fake 50k](media/5289_50k.wav) |
-|| 80k      |  [🤖 Fake 80k](media/5289_80k.wav) |
-|| 100k     |  [🤖 Fake 100k](media/5289_100k.wav) |
+|[🔊 Real 50k](media/5259.wav) | 50k      |  [🤖 Fake 50k](media/5259_50k.wav) |
+|| 80k      |  [🤖 Fake 80k](media/5259_80k.wav) |
+|| 100k     |  [🤖 Fake 100k](media/5259_100k.wav) |
 
 ### Training Curves
 
