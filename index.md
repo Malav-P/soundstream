@@ -1,5 +1,5 @@
 ## Dataset
-We use LibriTTS dataset, specifically with `train-clean-100` subset. It can be downloaded and used in pytorch with the following line:
+We use the LibriTTS dataset, specifically the `train-clean-100` subset. It can be downloaded and used in pytorch with the following line:
 
 ```python
 libritts_dataset = torchaudio.datasets.LIBRITTS('.', download=True)
@@ -41,13 +41,13 @@ weights=(1.0, 0.1, 0.01, 1.0, 1.0), # (adversarial loss, feature loss, multi_spe
 
 ### 🎧 Real vs. Fake Audio Samples
 
-We take 100 samples from the `dev-clean` subset of LibriTTS for testing. We report a ViSQOL score of 2.40 which is well below the numbers reported in the original soundstream paper. Not sure why. Suggestions welcome.
+We take 100 test samples from the `dev-clean` subset of LibriTTS for testing. We report a ViSQOL score which is calculated as the mean of MOS-LQO scores of the 100 samples. Not sure why the ViSQOL score is well below the reported number by the authors. Insights into why are welcome.
 
-| Real Audio | Iteration No. |  Fake (Generated) Audio |
-|----------|------------|------------------------|
-|[🔊 Real 50k](media/5259.wav) | 50k      |  [🤖 Fake 50k](media/5259_50k.wav) |
-|| 80k      |  [🤖 Fake 80k](media/5259_80k.wav) |
-|| 100k     |  [🤖 Fake 100k](media/5259_100k.wav) |
+| Real Audio                        | Iteration No.|  Fake (Generated) Audio             | VISQOL|
+|-----------------------------------|--------------|-------------------------------------|-------|
+|[🔊 Real 50k](media/5259.wav) | 50k               |  [🤖 Fake 50k](media/5259_50k.wav)   |2.3049 |
+|                              | 80k               |  [🤖 Fake 80k](media/5259_80k.wav)   |1.9633 |
+|                              | 100k              |  [🤖 Fake 100k](media/5259_100k.wav) |2.2364 |
 
 ### Training Curves
 
