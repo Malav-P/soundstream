@@ -1,3 +1,9 @@
+## Overview
+This repository implements the Soundstream neural audio codec from scratch in pytorch, staying as true as possible to the [paper](https://arxiv.org/abs/2107.03312). We provide an implemenration of the model in `model.py` and training code in `train.py`. 
+
+![](./media/soundstream.png)
+
+
 ## Dataset
 We use the LibriTTS dataset, specifically the `train-clean-100` subset. It can be downloaded and used in pytorch with the following line:
 
