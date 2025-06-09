@@ -15,3 +15,8 @@ Run this locally to set up port forwarding:
 ssh -N -L localhost:16006:atl1-1-02-003-19-1.pace.gatech.edu:6006 <your-login>@login-ice.pace.gatech.edu 
 ```
 Then go into your browser and type in `http://localhost:16006`
+
+## TODO
+
+- Grouped Residual Vector Quantization
+- FiLM Layer
