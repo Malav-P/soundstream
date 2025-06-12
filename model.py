@@ -107,6 +107,10 @@ class Decoder(nn.Module):
     
 class VectorQuantizer(nn.Module):
     def __init__(self, codebook_dim, codebook_size, num_groups=1, gamma=0.99, dead_codebook_ema_threshold=2):
+
+        if codebook_dim % num_groups != 0:
+            raise ValueError("codebook_dim must be divisible by num_groups")
+
         super().__init__()
         self.codebook_dim = codebook_dim
         self.codebook_size = codebook_size
@@ -114,8 +118,8 @@ class VectorQuantizer(nn.Module):
         self.register_buffer('codebook', torch.empty(num_groups, codebook_size, codebook_dim // num_groups))
         self.register_buffer('N', torch.ones(num_groups, codebook_size))
         self.register_buffer('m', self.codebook.detach().clone())
-        self.saved_input   = [[]]*num_groups
-        self.saved_indices = [[]]*num_groups
+        self.saved_input   = [[] for _ in range(self.num_groups)]
+        self.saved_indices = [[] for _ in range(self.num_groups)]
 
         self.gamma = gamma
         self.dead_codebook_ema_threshold = dead_codebook_ema_threshold
@@ -139,10 +143,38 @@ class VectorQuantizer(nn.Module):
             dist = x_norm + codebook_norm.unsqueeze(0).unsqueeze(0) - 2 * x_g @ group.t()   # (B,S,N)
 
             indices = torch.argmin(dist, dim=-1)
-            self.saved_indices[g].append(indices.clone())                     # (B,S)
+            self.saved_indices[g].append(indices)                     # (B,S)
             quantized[:, :, g, :] = group[indices]                       # (B, S, D//G)
 
-        quantized = quantized.view(x.shape)   # (B, S, G, D // G) - > (B, S, D)
+        quantized = quantized.view(B, S, D)   # (B, S, G, D // G) - > (B, S, D)
+
+        # B, S, D = x.shape
+        # G = self.num_groups
+        
+        # x_grouped = x.view(B, S, G, D // G)
+        
+        # # Compute norms
+        # x_norm = (x_grouped ** 2).sum(dim=-1, keepdim=True)  # (B, S, G, 1)
+        # codebook_norm = (self.codebook ** 2).sum(dim=-1)  # (G, N)
+        
+        # # Vectorized dot product using einsum
+        # dot_products = torch.einsum('bsgd,gnd->bsgn', x_grouped, self.codebook)
+        
+        # # Compute distances
+        # dist = x_norm + codebook_norm.unsqueeze(0).unsqueeze(0) - 2 * dot_products
+        
+        # # Find indices and quantize
+        # indices = torch.argmin(dist, dim=-1)  # (B, S, G)
+        
+        # # Advanced indexing for quantization
+        # quantized = self.codebook[torch.arange(G).view(1, 1, G), indices]
+        
+        # # Save for backward pass
+        # for g in range(G):
+        #     self.saved_input[g].append(x_grouped[:, :, g, :])
+        #     self.saved_indices[g].append(indices[:, :, g].clone())
+        
+        # quantized = quantized.view(B, S, D)
          
         return x + (quantized - x).detach() # straight through estimator
     
@@ -173,8 +205,8 @@ class VectorQuantizer(nn.Module):
 
         self._prune_unused_codes()
 
-        self.saved_input = [[]]*self.num_groups
-        self.saved_indices = [[]]*self.num_groups
+        self.saved_input = [[] for _ in range(self.num_groups)]
+        self.saved_indices = [[] for _ in range(self.num_groups)]
 
     def _prune_unused_codes(self):
         to_be_pruned = self.N < self.dead_codebook_ema_threshold
@@ -213,8 +245,6 @@ class VectorQuantizer(nn.Module):
         return loss
 
         
-
-
 class ResidualVectorQuantizer(nn.Module):
     def __init__(self, n_quantizers, codebook_dim, codebook_size, num_groups=1, gamma=0.99, use_quantizer_dropout=True):
         super().__init__()
@@ -580,43 +610,46 @@ class SoundStream(nn.Module):
 
 if __name__ == "__main__":
 
-    from torch.profiler import profile, record_function, ProfilerActivity
-    import time
+    # from torch.profiler import profile, record_function, ProfilerActivity
+    # import time
 
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    # device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    model = SoundStream(num_groups=2).to(device)
-    model.eval()
+    # model = SoundStream(num_groups=2).to(device)
+    # model.eval()
 
-    x = torch.randn(128,1,24000).to(device)
+    # x = torch.randn(128,1,24000).to(device)
 
-    # with profile(activities=[
-    #         ProfilerActivity.CPU,
-    #         ProfilerActivity.CUDA],  # Only include CUDA if using GPU
-    #         record_shapes=True) as prof:
+    # # with profile(activities=[
+    # #         ProfilerActivity.CPU,
+    # #         ProfilerActivity.CUDA],  # Only include CUDA if using GPU
+    # #         record_shapes=True) as prof:
         
-    #     with record_function("model_inference"):
-    with torch.no_grad():
-        model(x)
-        start = time.perf_counter()
-        model.rvq.update_codebook()
-        end = time.perf_counter()
+    # #     with record_function("model_inference"):
+    # with torch.no_grad():
+    #     model(x)
+    #     start = time.perf_counter()
+    #     model.rvq.update_codebook()
+    #     end = time.perf_counter()
 
-        print(end-start)
+    #     print(end-start)
 
     # print(prof.key_averages().table(sort_by="self_cpu_time_total", row_limit=10))
 
-    # import time
+    import time
 
-    # B, S, D = (16, 50, 512)
+    B, S, D = (16, 50, 512)
 
-    # vq = VectorQuantizer(codebook_dim=512, codebook_size=1024, num_groups=1)
+    vq = VectorQuantizer(codebook_dim=512, codebook_size=1024, num_groups=2)
 
-    # x = torch.randn(B, S, D)
-    # y = vq(x)
+    x = torch.randn(B, S, D)
 
-    # start = time.perf_counter()
-    # vq.update_codebook()
-    # end = time.perf_counter()   
+    
+    y = vq(x)
+    
+    start = time.perf_counter()
+    vq.update_codebook()
+    end = time.perf_counter()  
+     
 
-    # print(end-start)
+    print(end-start)

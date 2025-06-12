@@ -35,6 +35,7 @@ def generator_warmup(batch_size=128,
                      G_betas=(0.9, 0.99),
                      n_iter=0,
                      max_iter=50000,
+                     vq_num_groups=1,
                      rq_ema_gamma=0.95,
                      use_quantizer_dropout=True,
                      C=32,
@@ -47,6 +48,7 @@ def generator_warmup(batch_size=128,
     writer = SummaryWriter(log_dir)
 
     G = SoundStream(C=C,
+                    num_groups=vq_num_groups,
                     rq_ema_gamma=rq_ema_gamma,
                     use_quantizer_dropout=use_quantizer_dropout
                     ).to(device)
@@ -114,7 +116,7 @@ def generator_warmup(batch_size=128,
                 writer.add_scalar(f"Quantizers/l2norm_codebook_{i}", mean_norm, n_iter)
 
                 probs  = vq.N / torch.sum(vq.N)
-                codebook_entropy = - (probs * torch.log2(probs)).sum().item() / math.log2(vq.codebook_size)   # 1 means uniform distribution (GOOD), 0 means dirac delta distribution (BAD)
+                codebook_entropy = - (probs * torch.log2(probs)).sum().item() / math.log2(vq.num_groups * vq.codebook_size)   # 1 means uniform distribution (GOOD), 0 means dirac delta distribution (BAD)
                 writer.add_scalar(f"Quantizers/entropy_codebook_{i}", codebook_entropy, n_iter)
 
 
@@ -142,6 +144,7 @@ def adversarial_training(batch_size=128,
                          update_codebook_every=1,
                          n_iter=50000,
                          max_iter=95000,
+                         vq_num_groups=1,
                          rq_ema_gamma=0.95,
                          use_quantizer_dropout=True,
                          C=32,
@@ -156,6 +159,7 @@ def adversarial_training(batch_size=128,
     save_dir = '' if save_dir is None else save_dir
 
     G = SoundStream(C=C,
+                    num_groups=vq_num_groups,
                     rq_ema_gamma=rq_ema_gamma,
                     use_quantizer_dropout=use_quantizer_dropout).to(device)
     stft_D = STFTDiscriminator(C=C).to(device)
@@ -196,7 +200,7 @@ def adversarial_training(batch_size=128,
         collate_fn=collate_fn,
         num_workers=7)
 
-
+    best_multi_spec_loss = 1e5
     done = False
     while not done:
         for x in tqdm(data_loader):
@@ -257,8 +261,13 @@ def adversarial_training(batch_size=128,
                 writer.add_scalar(f"Quantizers/l2norm_codebook_{i}", mean_norm, n_iter)
 
                 probs  = vq.N / torch.sum(vq.N)
-                codebook_entropy = - (probs * torch.log2(probs)).sum().item() / math.log2(vq.codebook_size)   # 1 means uniform distribution (GOOD), 0 means dirac delta distribution (BAD)
+                codebook_entropy = - (probs * torch.log2(probs)).sum().item() / math.log2(vq.num_groups * vq.codebook_size)  # 1 means uniform distribution (GOOD), 0 means dirac delta distribution (BAD)
                 writer.add_scalar(f"Quantizers/entropy_codebook_{i}", codebook_entropy, n_iter)
+
+            if multi_spec_loss < best_multi_spec_loss:
+                best_multi_spec_loss = multi_spec_loss
+                
+                torch.save(G.state_dict(), save_dir + f'soundstream_best_{round(multi_spec_loss.item())}.pth')
 
             n_iter += 1
 
@@ -279,16 +288,19 @@ def adversarial_training(batch_size=128,
 
 if __name__ == "__main__":
 
-    # generator_warmup(log_dir="runs/generator_warmup/",
-    #                  save_dir="checkpoints/generator_warmup/")
+    # generator_warmup(log_dir="runs/generator_warmup_2group/",
+    #                  save_dir="checkpoints/generator_warmup_2group/",
+    #                  vq_num_groups=2)
 
-    adversarial_training(log_dir="runs/training_0.1_feat_0.01_mspec_bs16/",
-                         save_dir="checkpoints/training_0.1_feat_0.01_mspec_bs16/",
-                         weights=(1.0, 0.1, 0.01, 1.0, 1.0),
+    adversarial_training(log_dir="runs/training_0.1_feat_0.01_mspec_2group/",
+                         save_dir="checkpoints/training_0.1_feat_0.01_mspec_2group/",
+                         weights=(1.0, 0.01, 0.01, 1.0, 1.0),
                          G_lr=1e-4,
                          D_lr=1e-4,
-                         update_D_every=3,
+                         update_D_every=1,
                          update_codebook_every=8,   # typically make sure batch_size * update_codebook_every = 128 to avoid embeddings from blowing up
                          batch_size=16,
-                         n_iter=100000,
-                         max_iter=150000)
+                         vq_num_groups=2,
+                         n_iter=130000,
+                         max_iter=200000,
+                         use_quantizer_dropout=False)

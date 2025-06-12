@@ -18,5 +18,5 @@ Then go into your browser and type in `http://localhost:16006`
 
 ## TODO
 
-- Grouped Residual Vector Quantization
+- faster (vectorized) Grouped Residual Vector Quantization
 - FiLM Layer
