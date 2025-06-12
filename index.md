@@ -74,8 +74,9 @@ We take 100 test samples from the `dev-clean` subset of LibriTTS for testing. We
 |[🔊 Real 50k](media/5676.wav) | 50k               |  [🤖 Fake 50k](media/5676_50k.wav)   | |
 |                              | 75k               |  [🤖 Fake 75k](media/5676_75k.wav)   | |
 |                              | 100k              |  [🤖 Fake 100k](media/5676_100k.wav) | |
-|                              | 130k              |  [🤖 Fake 100k](media/5676_130k.wav) | |
-|                              | 200k              |  [🤖 Fake 100k](media/5676_200k.wav) | |
+|                              | 130k              |  [🤖 Fake 130k](media/5676_130k.wav) | |
+|                              | 200k              |  [🤖 Fake 200k](media/5676_200k.wav) | |
+|                              | Best              |  [🤖 Fake Best](media/5676_best.wav) | |
 
 ### Training Curves
 
